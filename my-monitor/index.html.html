@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>BSC 监控 Pro - 仅限上涨报警版</title>
+    <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+    <style>
+        :root { --bg: #0b0e11; --card: #181a20; --accent: #fcd535; --text: #eaecef; --red: #f6465d; --green: #0ecb81; --blue: #3b82f6; --border: #2b3139; }
+        body { font-family: "PingFang SC", sans-serif; background: var(--bg); color: var(--text); margin: 0; padding: 0; }
+        
+        .config-bar { background: #1e2329; padding: 15px 20px; border-bottom: 1px solid var(--border); }
+        .api-inputs { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-top: 10px; }
+        .api-inputs input { background: #0b0e11; border: 1px solid #444; color: var(--accent); padding: 8px 12px; border-radius: 6px; font-size: 12px; }
+
+        .top-nav { display: flex; justify-content: space-between; align-items: center; padding: 10px 20px; background: #181a20; position: sticky; top:0; z-index:9; }
+        .bj-time { font-size: 18px; font-weight: bold; color: var(--accent); font-family: monospace; }
+
+        .sidebar { position: fixed; right: -350px; top: 0; width: 300px; height: 100%; background: var(--card); border-left: 1px solid var(--border); transition: 0.3s; padding: 20px; z-index: 100; box-shadow: -5px 0 15px rgba(0,0,0,0.5); }
+        .sidebar.active { right: 0; }
+
+        .grid-container { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 15px; padding: 20px; }
+        .token-card { background: var(--card); border: 1px solid var(--border); border-radius: 16px; padding: 18px; position: relative; }
+        
+        .price-val { font-size: 30px; font-weight: bold; color: var(--green); font-family: 'Courier New', monospace; margin: 8px 0; }
+        .base-info { background: #0b0e11; padding: 10px; border-radius: 8px; font-size: 11px; color: #848e9c; margin-bottom: 12px; border: 1px solid #222; }
+        .base-info b { color: var(--accent); }
+
+        .live-change { font-size: 20px; font-weight: bold; margin-bottom: 10px; display: inline-block; padding: 4px 10px; border-radius: 6px; }
+        .up { background: rgba(14, 203, 129, 0.15); color: var(--green); }
+        .down { background: rgba(255, 255, 255, 0.05); color: #666; }
+
+        .stepper { display: flex; align-items: center; background: #0b0e11; border-radius: 10px; padding: 4px; margin-bottom: 15px; gap: 5px; }
+        .step-btn { width: 45px; height: 45px; background: #2b3139; border: none; color: white; border-radius: 8px; font-size: 18px; cursor: pointer; }
+        .step-input { flex: 1; background: transparent; border: 1px solid #333; color: white; text-align: center; font-size: 20px; font-weight: bold; width: 60px; border-radius: 6px; }
+
+        .alert-options { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+        .opt-btn { padding: 10px; border-radius: 8px; border: 1px solid #333; background: transparent; color: #555; font-size: 11px; font-weight: bold; cursor: pointer; }
+        .opt-btn.active-app { border-color: var(--blue); color: var(--blue); background: rgba(59, 130, 246, 0.1); }
+        .opt-btn.active-phone { border-color: var(--green); color: var(--green); background: rgba(14, 203, 129, 0.1); }
+
+        .btn-main { background: var(--accent); color: black; border: none; padding: 10px; border-radius: 6px; font-weight: bold; cursor: pointer; }
+        .flash-up { background: rgba(14, 203, 129, 0.12) !important; }
+        .flash-down { background: rgba(246, 70, 93, 0.12) !important; }
+        .mode-tag { font-size: 10px; background: #444; color: #eee; padding: 2px 6px; border-radius: 4px; vertical-align: middle; margin-left: 5px; }
+    </style>
+</head>
+<body>
+
+<div class="config-bar">
+    <div style="font-size: 11px; color: #848e9c; margin-bottom: 5px;">🔧 API 接口设置</div>
+    <div class="api-inputs">
+        <input id="appApiInput" type="text" placeholder="APP 报警 API" onchange="saveConfigs()">
+        <input id="phoneApiInput" type="text" placeholder="电话 报警 API" onchange="saveConfigs()">
+    </div>
+</div>
+
+<nav class="top-nav">
+    <div id="bjClock" class="bj-time">00:00:00</div>
+    <button class="btn-main" onclick="toggleSidebar()">+ 管理资产</button>
+</nav>
+
+<div id="sidebar" class="sidebar">
+    <h3 style="color: var(--accent)">资产管理</h3>
+    <textarea id="batchInput" rows="10" style="width:92%; background:#0b0e11; color:white; border:1px solid #333; padding:10px; border-radius:8px;" placeholder="粘贴合约地址 (每行一个)"></textarea>
+    <button class="btn-main" style="width:100%; margin-top:10px" onclick="processBatch()">记录当前价并添加</button>
+    <button class="btn-main" style="width:100%; background:#444; color:white; margin-top:10px" onclick="toggleSidebar()">关闭</button>
+</div>
+
+<div class="grid-container" id="tokenGrid"></div>
+
+<script>
+    let tokens = JSON.parse(localStorage.getItem('dex_up_only_v16') || '[]');
+    let prevPrices = {};
+
+    window.onload = () => {
+        document.getElementById('appApiInput').value = localStorage.getItem('app_api_url') || '';
+        document.getElementById('phoneApiInput').value = localStorage.getItem('phone_api_url') || '';
+        render();
+        setInterval(updateClock, 1000);
+        setInterval(scan, 1000);
+    };
+
+    function saveConfigs() {
+        localStorage.setItem('app_api_url', document.getElementById('appApiInput').value);
+        localStorage.setItem('phone_api_url', document.getElementById('phoneApiInput').value);
+    }
+
+    function updateClock() {
+        const bj = new Date(new Date().getTime() + (new Date().getTimezoneOffset() + 480) * 60000);
+        document.getElementById('bjClock').innerText = bj.toLocaleTimeString('zh-CN', {hour12: false});
+    }
+
+    function toggleSidebar() { document.getElementById('sidebar').classList.toggle('active'); }
+
+    async function processBatch() {
+        const addrs = document.getElementById('batchInput').value.split('\n').map(s => s.trim().toLowerCase()).filter(s => s.startsWith('0x'));
+        for(let addr of addrs) {
+            if(tokens.some(t => t.address === addr)) continue;
+            try {
+                const res = await axios.get(`https://api.dexscreener.com/latest/dex/tokens/${addr}`);
+                const pair = res.data.pairs[0];
+                if(pair) {
+                    tokens.push({
+                        address: addr, symbol: pair.baseToken.symbol,
+                        basePrice: parseFloat(pair.priceUsd), currentPrice: parseFloat(pair.priceUsd),
+                        addTime: new Date().toLocaleString('zh-CN', {hour12: false}),
+                        alertThreshold: 30.0, useApp: false, usePhone: false, lastAlert: 0
+                    });
+                }
+            } catch (e) {}
+        }
+        save(); render(); toggleSidebar();
+        document.getElementById('batchInput').value = '';
+    }
+
+    async function scan() {
+        const appApi = document.getElementById('appApiInput').value;
+        const phoneApi = document.getElementById('phoneApiInput').value;
+
+        const tasks = tokens.map(async (t) => {
+            try {
+                const res = await axios.get(`https://api.dexscreener.com/latest/dex/tokens/${t.address}`);
+                const pair = res.data.pairs[0];
+                const newPrice = parseFloat(pair.priceUsd);
+                
+                const el = document.getElementById(`card-${t.address}`);
+                if(el && prevPrices[t.address]) {
+                    if(newPrice > prevPrices[t.address]) { el.classList.add('flash-up'); setTimeout(()=>el.classList.remove('flash-up'), 400); }
+                    else if(newPrice < prevPrices[t.address]) { el.classList.add('flash-down'); setTimeout(()=>el.classList.remove('flash-down'), 400); }
+                }
+
+                prevPrices[t.address] = newPrice;
+                t.currentPrice = newPrice;
+                const change = ((t.currentPrice - t.basePrice) / t.basePrice * 100);
+                
+                // 核心逻辑修改：change 必须大于 0 (即上涨) 且达到阈值
+                if (change >= t.alertThreshold && (Date.now() - t.lastAlert > 300000)) {
+                    const content = `${t.symbol} 暴涨 ${change.toFixed(2)}%, 现价:${t.currentPrice}`;
+                    if (t.useApp && appApi) axios.get(`${appApi}${appApi.includes('?') ? '&' : '?'}title=上涨预警&content=${encodeURIComponent(content)}`);
+                    if (t.usePhone && phoneApi) axios.get(`${phoneApi}${phoneApi.includes('?') ? '&' : '?'}title=上涨预警&content=${encodeURIComponent(content)}`);
+                    
+                    t.lastAlert = Date.now();
+                    Swal.fire({ title: `🚀 ${t.symbol} 涨幅达标`, text: `当前上涨 ${change.toFixed(2)}%`, icon: 'success', toast: true, position: 'top-end', timer: 3000 });
+                }
+            } catch (e) {}
+        });
+        await Promise.all(tasks);
+        render();
+    }
+
+    function render() {
+        const container = document.getElementById('tokenGrid');
+        container.innerHTML = tokens.map((t, i) => {
+            const change = ((t.currentPrice - t.basePrice) / t.basePrice * 100).toFixed(2);
+            const isUp = parseFloat(change) >= 0;
+            return `
+            <div class="token-card" id="card-${t.address}">
+                <div style="display:flex; justify-content:space-between; align-items:start">
+                    <div>
+                        <strong style="font-size:22px; color:var(--accent)">${t.symbol}</strong>
+                        <span class="mode-tag">仅上涨报警</span>
+                    </div>
+                    <button onclick="remove(${i})" style="background:transparent; color:#555; border:none; font-size:18px; cursor:pointer">✕</button>
+                </div>
+
+                <div class="price-val">$${t.currentPrice.toFixed(8)}</div>
+                
+                <div class="live-change ${isUp ? 'up' : 'down'}">
+                    ${isUp ? '▲' : '▼'} ${Math.abs(change)}%
+                </div>
+
+                <div class="base-info">
+                    记录时间：<b>${t.addTime}</b><br>
+                    基准价格：<b>$${t.basePrice.toFixed(8)}</b>
+                </div>
+
+                <div style="font-size:11px; color:#848e9c; margin-bottom:8px">设定上涨报警阈值 (%)</div>
+                <div class="stepper">
+                    <button class="step-btn" onclick="adjustStep(${i}, -10)">-10</button>
+                    <input type="number" class="step-input" value="${t.alertThreshold}" 
+                           onchange="updateThreshold(${i}, this.value)" 
+                           onclick="this.select()">
+                    <button class="step-btn" onclick="adjustStep(${i}, 10)">+10</button>
+                </div>
+
+                <div class="alert-options">
+                    <button class="opt-btn ${t.useApp?'active-app':''}" onclick="updateT(${i},'useApp',${!t.useApp})">
+                        ${t.useApp ? '✅ APP 报警开' : '○ APP 报警关'}
+                    </button>
+                    <button class="opt-btn ${t.usePhone?'active-phone':''}" onclick="updateT(${i},'usePhone',${!t.usePhone})">
+                        ${t.usePhone ? '📞 电话报警开' : '○ 电话报警关'}
+                    </button>
+                </div>
+            </div>
+            `;
+        }).join('');
+    }
+
+    function updateThreshold(i, val) {
+        let num = parseFloat(val);
+        if (isNaN(num)) num = 30.0;
+        tokens[i].alertThreshold = Math.max(0.1, num);
+        save(); render();
+    }
+
+    function adjustStep(i, val) {
+        tokens[i].alertThreshold = Math.max(1, parseFloat(tokens[i].alertThreshold) + val);
+        save(); render();
+    }
+
+    function updateT(i, k, v) { tokens[i][k] = v; save(); render(); }
+    function remove(i) { tokens.splice(i, 1); save(); render(); }
+    function save() { localStorage.setItem('dex_up_only_v16', JSON.stringify(tokens)); }
+</script>
+</body>
+</html>
